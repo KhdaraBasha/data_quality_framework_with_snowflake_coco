@@ -49,6 +49,7 @@ DECLARE
     v_total_rules NUMBER DEFAULT 0;
     v_row_count_sql VARCHAR;
     v_error_sample_query VARCHAR;
+    v_wrapper_sql VARCHAR;
     
     -- Cursor for active rules
     rs RESULTSET;
@@ -59,7 +60,6 @@ DECLARE
         WHERE IS_ACTIVE = TRUE
         ORDER BY RULE_ID;
 BEGIN
-    -- Loop through each active rule
     FOR rule_rec IN c1 DO
         v_rule_id := rule_rec.RULE_ID;
         v_rule_name := rule_rec.RULE_NAME;
@@ -79,11 +79,12 @@ BEGIN
         v_result_status := NULL;
 
         BEGIN
-            -- Execute the rule SQL (CALL statement) and capture output
-            rs := (EXECUTE IMMEDIATE :v_rule_sql);
+            -- Execute the CALL statement, then read result via $1 positional reference
+            EXECUTE IMMEDIATE :v_rule_sql;
+            rs := (SELECT $1 AS VAL FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
             LET c2 CURSOR FOR rs;
             FOR val_rec IN c2 DO
-                v_output_value := val_rec."1";
+                v_output_value := val_rec.VAL;
             END FOR;
 
             v_run_end := CURRENT_TIMESTAMP();
@@ -230,3 +231,159 @@ $$;
 --   CALL BANKING_DQ_DB.DQ_MONITORING.RUN_DQ_FRAMEWORK('SCHEDULED_TASK');
 --
 -- ALTER TASK BANKING_DQ_DB.DQ_MONITORING.DQ_SCHEDULED_RUN RESUME;
+
+-- =============================================================================
+-- EMAIL NOTIFICATION INTEGRATION
+-- =============================================================================
+CREATE OR REPLACE NOTIFICATION INTEGRATION DQ_EMAIL_NOTIFICATION
+  TYPE = EMAIL
+  ENABLED = TRUE
+  ALLOWED_RECIPIENTS = ('<email>');  -- Update with your email
+
+-- =============================================================================
+-- DQ SUMMARY EMAIL REPORT PROCEDURE
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE SEND_DQ_REPORT(P_RECIPIENT VARCHAR DEFAULT '<email>')
+RETURNS VARCHAR
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_total_rules NUMBER;
+    v_passed NUMBER;
+    v_failed NUMBER;
+    v_critical NUMBER;
+    v_health_score FLOAT;
+    v_anomaly_count NUMBER;
+    v_report_body VARCHAR;
+    v_table_summary VARCHAR DEFAULT '';
+    v_failed_details VARCHAR DEFAULT '';
+    v_subject VARCHAR;
+    v_tbl VARCHAR;
+    v_tbl_total NUMBER;
+    v_tbl_passed NUMBER;
+    v_tbl_failed NUMBER;
+    v_tbl_health FLOAT;
+    v_rule_name VARCHAR;
+    v_col_name VARCHAR;
+    v_severity VARCHAR;
+    v_actual NUMBER;
+    v_pass_pct FLOAT;
+    v_run_ts VARCHAR;
+
+    c_tables CURSOR FOR
+        SELECT TABLE_NAME, 
+               COUNT(*) AS TOTAL,
+               SUM(CASE WHEN RESULT_STATUS = 'PASS' THEN 1 ELSE 0 END) AS PASSED,
+               SUM(CASE WHEN RESULT_STATUS = 'FAIL' THEN 1 ELSE 0 END) AS FAILED
+        FROM BANKING_DQ_DB.DQ_MONITORING.DQ_RULE_RESULTS r
+        JOIN BANKING_DQ_DB.DQ_MONITORING.DQ_RUN_CONTROL rc ON r.RUN_ID = rc.RUN_ID
+        WHERE rc.RUN_ID IN (SELECT MAX(RUN_ID) FROM BANKING_DQ_DB.DQ_MONITORING.DQ_RUN_CONTROL GROUP BY RULE_ID)
+        GROUP BY TABLE_NAME ORDER BY TABLE_NAME;
+
+    c_fails CURSOR FOR
+        SELECT r.RULE_NAME, r.TABLE_NAME, r.COLUMN_NAME, r.SEVERITY, r.ACTUAL_VALUE, r.PASS_PERCENTAGE
+        FROM BANKING_DQ_DB.DQ_MONITORING.DQ_RULE_RESULTS r
+        JOIN BANKING_DQ_DB.DQ_MONITORING.DQ_RUN_CONTROL rc ON r.RUN_ID = rc.RUN_ID
+        WHERE rc.RUN_ID IN (SELECT MAX(RUN_ID) FROM BANKING_DQ_DB.DQ_MONITORING.DQ_RUN_CONTROL GROUP BY RULE_ID)
+          AND r.RESULT_STATUS = 'FAIL'
+        ORDER BY CASE r.SEVERITY WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END, r.TABLE_NAME;
+BEGIN
+    -- Get overall stats from latest run per rule
+    SELECT COUNT(*),
+           SUM(CASE WHEN RESULT_STATUS = 'PASS' THEN 1 ELSE 0 END),
+           SUM(CASE WHEN RESULT_STATUS = 'FAIL' THEN 1 ELSE 0 END),
+           SUM(CASE WHEN RESULT_STATUS = 'FAIL' AND SEVERITY = 'HIGH' THEN 1 ELSE 0 END)
+    INTO :v_total_rules, :v_passed, :v_failed, :v_critical
+    FROM BANKING_DQ_DB.DQ_MONITORING.DQ_RULE_RESULTS r
+    JOIN BANKING_DQ_DB.DQ_MONITORING.DQ_RUN_CONTROL rc ON r.RUN_ID = rc.RUN_ID
+    WHERE rc.RUN_ID IN (SELECT MAX(RUN_ID) FROM BANKING_DQ_DB.DQ_MONITORING.DQ_RUN_CONTROL GROUP BY RULE_ID);
+
+    v_health_score := ROUND(v_passed / v_total_rules * 100, 1);
+
+    SELECT COUNT(*) INTO :v_anomaly_count
+    FROM BANKING_DQ_DB.DQ_MONITORING.DQ_ANOMALY_RESULTS
+    WHERE ANOMALY_STATUS = 'ANOMALY';
+
+    v_run_ts := TO_CHAR(CURRENT_TIMESTAMP(), 'YYYY-MM-DD HH24:MI:SS');
+
+    -- Build table summary
+    v_table_summary := '
+TABLE HEALTH SUMMARY
+----------------------------------------------
+';
+    FOR t IN c_tables DO
+        v_tbl_health := ROUND(t.PASSED / t.TOTAL * 100, 1);
+        v_table_summary := v_table_summary || '  ' || t.TABLE_NAME || ': ' || v_tbl_health || '% (' || t.PASSED || '/' || t.TOTAL || ' passed, ' || t.FAILED || ' failed)
+';
+    END FOR;
+
+    -- Build failed rules detail
+    v_failed_details := '
+FAILED RULES DETAIL
+----------------------------------------------
+';
+    FOR f IN c_fails DO
+        v_failed_details := v_failed_details || '  [' || f.SEVERITY || '] ' || f.RULE_NAME || ' | ' || f.TABLE_NAME || '.' || COALESCE(f.COLUMN_NAME, '-') || ' | Violations: ' || f.ACTUAL_VALUE || ' | Pass: ' || f.PASS_PERCENTAGE || '%
+';
+    END FOR;
+
+    IF (v_failed = 0) THEN
+        v_failed_details := '
+  No failures detected. All rules passed!
+';
+    END IF;
+
+    -- Compose full report
+    v_subject := 'DQ Report: BANKING_DQ_DB | Health: ' || v_health_score || '% | ' || v_run_ts;
+
+    v_report_body := '
+==============================================
+  DATA QUALITY SUMMARY REPORT
+  BANKING_DQ_DB | ' || v_run_ts || '
+==============================================
+
+OVERALL METRICS
+----------------------------------------------
+  Health Score:       ' || v_health_score || '%
+  Total Rules:        ' || v_total_rules || '
+  Passed:             ' || v_passed || '
+  Failed:             ' || v_failed || '
+  Critical (HIGH):    ' || v_critical || '
+  Active Anomalies:   ' || v_anomaly_count || '
+' || v_table_summary || v_failed_details || '
+----------------------------------------------
+  Report generated by BANKING_DQ_DB.DQ_MONITORING
+  DQ Monitoring Board available in Snowsight
+==============================================
+';
+
+    -- Send email
+    CALL SYSTEM$SEND_EMAIL(
+        'DQ_EMAIL_NOTIFICATION',
+        :P_RECIPIENT,
+        :v_subject,
+        :v_report_body
+    );
+
+    RETURN 'DQ Report sent to ' || P_RECIPIENT || ' | Health: ' || v_health_score || '% | Failed: ' || v_failed;
+END;
+$$;
+
+-- =============================================================================
+-- USAGE: Run DQ framework + send report
+-- =============================================================================
+-- CALL BANKING_DQ_DB.DQ_MONITORING.RUN_DQ_FRAMEWORK('MANUAL');
+-- CALL BANKING_DQ_DB.DQ_MONITORING.SEND_DQ_REPORT('<email>');
+--
+-- OPTIONAL: Scheduled task that runs DQ + sends report daily
+-- CREATE OR REPLACE TASK BANKING_DQ_DB.DQ_MONITORING.DQ_DAILY_RUN_AND_REPORT
+--   WAREHOUSE = COMPUTE_WH
+--   SCHEDULE = 'USING CRON 0 7 * * * UTC'
+-- AS
+--   BEGIN
+--     CALL BANKING_DQ_DB.DQ_MONITORING.RUN_DQ_FRAMEWORK('SCHEDULED_TASK');
+--     CALL BANKING_DQ_DB.DQ_MONITORING.SEND_DQ_REPORT('<email>');
+--   END;
+--
+-- ALTER TASK BANKING_DQ_DB.DQ_MONITORING.DQ_DAILY_RUN_AND_REPORT RESUME;
