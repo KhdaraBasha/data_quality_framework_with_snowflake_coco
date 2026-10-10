@@ -1,0 +1,70 @@
+/*******************************************************************************
+ *  DQ_cleanup.sql
+ *  Data Quality Framework – Step 8: Cleanup Script
+ *  
+ *  WARNING: This script drops ALL objects created by the DQ Framework.
+ *           DO NOT EXECUTE unless you want to completely remove the framework.
+ *           Review each section before running.
+ ******************************************************************************/
+
+-- =============================================================================
+-- 1. DROP NOTIFICATION INTEGRATION
+-- =============================================================================
+DROP NOTIFICATION INTEGRATION IF EXISTS DQ_EMAIL_NOTIFICATION;
+
+-- =============================================================================
+-- 2. DROP ALL STORED PROCEDURES IN DQ_MONITORING SCHEMA
+-- =============================================================================
+
+-- Orchestration procedures
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.RUN_DQ_FRAMEWORK(VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.SEND_DQ_REPORT(VARCHAR);
+
+-- Custom DMF procedures (generic reusable)
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_NULL_COUNT(VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_DUPLICATE_COUNT(VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_ROW_COUNT(VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_POSITIVE_CHECK(VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_ACCEPTED_VALUES(VARCHAR, VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_REFERENTIAL_INTEGRITY(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_FUTURE_DATE_CHECK(VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_INVALID_EMAIL(VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_RANGE_CHECK(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_DOB_AGE_RANGE(VARCHAR, VARCHAR, VARCHAR, NUMBER, NUMBER);
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_FRESHNESS_HOURS(VARCHAR, VARCHAR, VARCHAR);
+
+-- Business-specific DMF procedures
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_NONNEG_BALANCE_SAVINGS();
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_APPROVED_LTE_REQUESTED();
+DROP PROCEDURE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_APPROVED_NULL_WHEN_NOT_APPROVED();
+
+-- =============================================================================
+-- 3. DROP ALL FRAMEWORK TABLES IN DQ_MONITORING SCHEMA
+-- =============================================================================
+DROP TABLE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_ERROR_RECORDS;
+DROP TABLE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_ANOMALY_RESULTS;
+DROP TABLE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_RULE_RESULTS;
+DROP TABLE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_RUN_CONTROL;
+DROP TABLE IF EXISTS BANKING_DQ_DB.DQ_MONITORING.DQ_RULE_CONFIG;
+
+-- =============================================================================
+-- 4. DROP DQ_MONITORING SCHEMA
+-- =============================================================================
+DROP SCHEMA IF EXISTS BANKING_DQ_DB.DQ_MONITORING;
+
+-- =============================================================================
+-- 5. DROP SOURCE DATA (OPTIONAL — uncomment only if you want to remove test data)
+-- =============================================================================
+-- DROP TABLE IF EXISTS BANKING_DQ_DB.RAW.TRANSACTIONS;
+-- DROP TABLE IF EXISTS BANKING_DQ_DB.RAW.LOAN_APPLICATIONS;
+-- DROP TABLE IF EXISTS BANKING_DQ_DB.RAW.ACCOUNTS;
+-- DROP TABLE IF EXISTS BANKING_DQ_DB.RAW.CUSTOMERS;
+-- DROP TABLE IF EXISTS BANKING_DQ_DB.RAW.BRANCHES;
+-- DROP SCHEMA IF EXISTS BANKING_DQ_DB.RAW;
+-- DROP DATABASE IF EXISTS BANKING_DQ_DB;
+
+-- =============================================================================
+-- 6. VERIFICATION — confirm all objects are removed
+-- =============================================================================
+-- SHOW SCHEMAS IN DATABASE BANKING_DQ_DB;
+-- SHOW NOTIFICATION INTEGRATIONS LIKE 'DQ_EMAIL%';
